@@ -95,8 +95,11 @@ class Display:
         try:
             s = pattern.format(" " * self.columns, str(put, "utf-8", "replace"))
 
-        except TypeError:
-            s = pattern.format(" " * self.columns, put)
+        except (TypeError, UnicodeEncodeError):
+            try:
+                s = pattern.format(" " * self.columns, put.encode(sys.stdout.encoding or "utf-8", "replace").decode(sys.stdout.encoding or "utf-8"))
+            except (UnicodeEncodeError, AttributeError):
+                s = pattern.format(" " * self.columns, put)
 
         sys.stdout.write(s)
 
@@ -744,6 +747,26 @@ class SafariBooks:
 
         return combined
 
+    def _get_file_paths(self):
+        """Query the files API to build a mapping of filenames to their correct full paths."""
+        file_map = {}
+        files_url = API_ORIGIN_URL + "/api/v2/epubs/urn:orm:book:{}/files/".format(self.book_id)
+        while files_url:
+            response = self.requests_provider(files_url, headers=self._get_content_headers())
+            if response == 0 or response.status_code != 200:
+                break
+            try:
+                data = response.json()
+                for f in data.get("results", []):
+                    filename = f.get("filename", "")
+                    full_path = f.get("full_path", "")
+                    if filename and full_path:
+                        file_map[filename] = full_path
+                files_url = data.get("next")
+            except (ValueError, Exception):
+                break
+        return file_map
+
     def get_book_chapters(self, offset=0, limit=20):
         chapters = []
         params = {
@@ -774,12 +797,17 @@ class SafariBooks:
         if response["count"] > sys.getrecursionlimit():
             sys.setrecursionlimit(response["count"])
 
+        # Get mapping of filename -> full_path from files API
+        file_map = self._get_file_paths()
         asset_base_url = API_ORIGIN_URL + "/api/v2/epubs/urn:orm:book:{0}/files".format(self.book_id)
 
         page_results = []
         for ch in response["results"]:
             content_url = ch.get("content_url", "")
+            # Extract filename from content_url
             filename = content_url.split("/")[-1] if content_url else ""
+            # Look up the correct full path from file_map
+            full_path = file_map.get(filename, filename)
 
             related_assets = ch.get("related_assets", {})
             images = related_assets.get("images", [])
@@ -787,7 +815,7 @@ class SafariBooks:
 
             stylesheets = [{"url": url} for url in stylesheets_urls]
 
-            files_url = asset_base_url + "/" + filename
+            files_url = asset_base_url + "/" + full_path
             normalized = {
                 "filename": filename,
                 "title": ch.get("title", ""),
@@ -796,6 +824,7 @@ class SafariBooks:
                 "images": images,
                 "stylesheets": stylesheets,
                 "site_styles": [],
+                "file_path": full_path,
             }
             page_results.append(normalized)
 
@@ -1258,13 +1287,22 @@ class SafariBooks:
             # Derive a stable ID and href from v2 fields.
             reference_id = cc.get("reference_id", "")
             href = reference_id.split("-/", 1)[-1] if "-/" in reference_id else reference_id
-            nav_id = cc.get("fragment") or cc.get("ourn") or href or "navpoint-{0}".format(c)
+            fragment = cc.get("fragment", "")
+            ourn = cc.get("ourn", "")
+            nav_id = fragment or ourn or href or "navpoint-{0}".format(c)
+
+            # Build the content src with fragment for proper navigation
+            file_href = href.replace(".html", ".xhtml").split("/")[-1]
+            if fragment and file_href:
+                content_src = "{0}#{1}".format(file_href, fragment)
+            else:
+                content_src = file_href
 
             r += "<navPoint id=\"{0}\" playOrder=\"{1}\">" \
                  "<navLabel><text>{2}</text></navLabel>" \
                  "<content src=\"{3}\"/>".format(
                     nav_id, c,
-                    escape(cc.get("title", "")), href.replace(".html", ".xhtml").split("/")[-1]
+                    escape(cc.get("title", "")), content_src
                  )
 
             if cc["children"]:
