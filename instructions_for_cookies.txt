@@ -1,0 +1,4 @@
+Take cookies from main oreilly page once logged in with:
+var output = {};document.cookie.split(/\s*;\s*/).forEach(function(pair) {pair = pair.split(/\s*=\s*/);output[pair[0]] = pair.splice(1).join('=');});console.log(JSON.stringify(output));
+
+in dev console and put them in cookies.json file
