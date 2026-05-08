@@ -1,3 +1,21 @@
+EDITS:
+This is a fork modified for v2 api of oreilly and it's sometimes imperfect.
+safaribooks.py -> Works vor api v2 for most books
+safaribooks_method_b.py -> Alternative method to run if previous script fails
+
+Explanation:
+It just so happens that they heavily modified the api and how books are served.
+Therefore as soon as you downloaded a book I suggest you to check out if it works: Check if TOC is correct, if TOC links work, if pages are missing or not present at all and differ from the
+page number specified in the book home page.
+
+Both methods work for certain types of books. There are some books which still give me troubles and won't download correctly.
+PR are welcome about that or about global fixing so we can have a single script.
+
+I will work my way through the non working books as soon as I meet them.
+
+Paciox 08/05/26
+
+
 # SafariBooks
 Download and generate *EPUB* of your favorite books from [*Safari Books Online*](https://www.safaribooksonline.com) library.  
 I'm not responsible for the use of this program, this is only for *personal* and *educational* purpose.  
