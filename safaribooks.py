@@ -231,6 +231,32 @@ class WinQueue(list):  # TODO: error while use `process` in Windows: can't pickl
         return self.__len__()
 
 
+def normalize_output_pdf_args(argv):
+    normalized_args = []
+    index = 0
+
+    while index < len(argv):
+        arg = argv[index]
+
+        if arg in {"--output-pdf", "--output-to-pdf"}:
+            next_arg = argv[index + 1] if index + 1 < len(argv) else None
+
+            if next_arg in {"0", "1"}:
+                normalized_args.append("{0}={1}".format(arg, next_arg))
+                index += 2
+                continue
+
+            if next_arg is None or next_arg.startswith("-") or len(next_arg) != 1 or not next_arg.isdigit():
+                normalized_args.append("{0}=0".format(arg))
+                index += 1
+                continue
+
+        normalized_args.append(arg)
+        index += 1
+
+    return normalized_args
+
+
 class SafariBooks:
     LOGIN_URL = ORLY_BASE_URL + "/member/auth/login/"
     LOGIN_ENTRY_URL = SAFARI_BASE_URL + "/login/unified/?next=/home/"
@@ -428,9 +454,9 @@ class SafariBooks:
         self.display.info("Downloading book CSSs... (%s files)" % len(self.css), state=True)
         self.collect_css()
         self.pdf_profile = analyze_book_layout(self.BOOK_PATH, self.book_id)
-        self.use_pdf_output = args.output_pdf or self.pdf_profile.should_auto_pdf
+        self.use_pdf_output = args.output_pdf is not None or self.pdf_profile.should_auto_pdf
         if self.use_pdf_output:
-            if args.output_pdf:
+            if args.output_pdf is not None:
                 self.display.info("PDF output requested; using the separate PDF renderer.", state=True)
             else:
                 self.display.info(
@@ -441,6 +467,10 @@ class SafariBooks:
         self.images_done_queue = Queue(0) if "win" not in sys.platform else WinQueue()
         self.display.info("Downloading book images... (%s files)" % len(self.images), state=True)
         self.collect_images()
+
+        if self.use_pdf_output and args.output_pdf == 1:
+            self.display.info("Creating EPUB file to keep alongside the PDF...", state=True)
+            self.create_epub()
 
         self.display.info(
             "Creating PDF file..." if self.use_pdf_output else "Creating EPUB file...",
@@ -1669,8 +1699,9 @@ if __name__ == "__main__":
              " Use this option if you're going to export the EPUB to E-Readers like Amazon Kindle."
     )
     arguments.add_argument(
-        "--output-pdf", "--output-to-pdf", dest="output_pdf", action='store_true',
+        "--output-pdf", "--output-to-pdf", dest="output_pdf", type=int, choices=[0, 1], default=None,
         help="Render PDF output using the separate PDF renderer instead of packaging an EPUB."
+             " Use `1` to also create the EPUB; omit the value or use `0` for PDF only."
     )
     arguments.add_argument(
         "--preserve-log", dest="log", action='store_true', help="Leave the `info_XXXXXXXXXXXXX.log`"
@@ -1684,7 +1715,7 @@ if __name__ == "__main__":
                " `" + SAFARI_BASE_URL + "/library/view/book-name/XXXXXXXXXXXXX/`"
     )
 
-    args_parsed = arguments.parse_args()
+    args_parsed = arguments.parse_args(normalize_output_pdf_args(sys.argv[1:]))
     if args_parsed.cred or args_parsed.login:
         print("WARNING: Due to recent changes on ORLY website, \n" \
                 "the `--cred` and `--login` options are temporarily disabled.\n"
