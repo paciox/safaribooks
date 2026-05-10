@@ -15,6 +15,8 @@ I will work my way through the non working books as soon as I meet them.
 
 Paciox 08/05/26
 
++++Fixed++++
+As of now all my test return success. Might be some edge cases that still fail but it works now
 
 # SafariBooks
 Download and generate *EPUB* of your favorite books from [*Safari Books Online*](https://www.safaribooksonline.com) library.  
