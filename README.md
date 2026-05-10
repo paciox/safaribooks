@@ -41,24 +41,75 @@ Before any usage please read the *O'Reilly*'s [Terms of Service](https://learnin
   * [Example: Use or not the `--kindle` option](#use-or-not-the---kindle-option)
 
 ## Requirements & Setup:
-First of all, it requires `python3` and `pip3` or `pipenv` to be installed.  
+You need Python 3 installed first. For normal reflowable books, the script only needs the base Python dependencies from `requirements.txt`. For fixed-layout books, the script may generate a compatibility PDF instead of an EPUB, and that requires extra packages plus a Chromium browser installed by Playwright.
+
+The dependencies are split into two groups:
+
+- Base EPUB dependencies: always needed.
+  - `requests`: downloads metadata, chapters, CSS, images, and other book assets.
+  - `lxml`: parses the downloaded HTML/XML and builds the EPUB structure.
+- Optional PDF dependencies: only needed for fixed-layout books.
+  - `playwright`: renders the downloaded XHTML/CSS with Chromium, which handles complex fixed-layout pages much better than many EPUB readers.
+  - `Pillow`: combines the rendered page images into the final PDF.
+  - `chromium` via `playwright install chromium`: the `playwright` Python package does not ship the browser executable by itself, so this extra step downloads the actual browser runtime used for rendering.
+
+### Option 1: plain `pip`
 ```shell
 $ git clone https://github.com/lorenzodifuccia/safaribooks.git
-Cloning into 'safaribooks'...
-
 $ cd safaribooks/
 $ pip3 install -r requirements.txt
-
-OR
-
-$ pipenv install && pipenv shell
-```  
-
-The program depends of only two **Python _3_** modules:
-```python3
-lxml>=4.1.1
-requests>=2.20.0
 ```
+
+If you also want fixed-layout PDF support:
+```shell
+$ pip3 install Pillow playwright
+$ python3 -m playwright install chromium
+```
+
+### Option 2: recommended `venv`
+Using a virtual environment is fully supported and is the safest approach, because it keeps this project's Python packages isolated from the rest of your system.
+
+On Windows PowerShell:
+```powershell
+py -3 -m venv venv
+venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+If you also want fixed-layout PDF support inside that same virtual environment:
+```powershell
+python -m pip install Pillow playwright
+python -m playwright install chromium
+```
+
+If you prefer not to activate the virtual environment, you can still install everything into it explicitly:
+```powershell
+venv\Scripts\python.exe -m pip install -r requirements.txt
+venv\Scripts\python.exe -m pip install Pillow playwright
+venv\Scripts\python.exe -m playwright install chromium
+```
+
+### Option 3: `pipenv`
+`pipenv` is also fine, but note that the `Pipfile` only covers the base downloader dependencies. The optional PDF stack still needs to be installed explicitly.
+
+```shell
+$ pipenv install
+$ pipenv shell
+$ pip install -r requirements.txt
+```
+
+If you also want fixed-layout PDF support:
+```shell
+$ pip install Pillow playwright
+$ python -m playwright install chromium
+```
+
+### Important notes about the PDF path
+- You do not need `Pillow`, `playwright`, or Chromium for ordinary books that stay on the EPUB path.
+- You do need them for fixed-layout books, because this script currently creates a compatibility PDF for those titles instead of trying to ship a broken EPUB.
+- Installing the Python package `playwright` inside a virtual environment is enough for the Python side. The Chromium browser binaries downloaded by `python -m playwright install chromium` are managed by Playwright itself, not as normal site-packages files.
+- On Linux, Playwright may additionally ask for OS-level libraries. On Windows, the commands above are usually enough.
   
 ## Usage:
 It's really simple to use, just choose a book from the library and replace in the following command:
@@ -123,6 +174,8 @@ After the execution, you can read the `9781491958698_CLEAR.epub` in every E-Read
 
 The program offers also an option to ensure best compatibilities for who wants to export the `EPUB` to E-Readers like Amazon Kindle: `--kindle`, it blocks overflow on `table` and `pre` elements (see [example](#use-or-not-the---kindle-option)).  
 In this case, I suggest you to convert the `EPUB` to `AZW3` with Calibre or to `MOBI`, remember in this case to select `Ignore margins` in the conversion options:  
+
+When the source book is a fixed-layout title, the downloader keeps the original XHTML/CSS untouched on disk, downloads any referenced font files, and renders a PDF with Chromium instead of packaging an EPUB. This is why the optional PDF stack needs both the Python packages and the separate `playwright install chromium` step.
   
 ![Calibre IgnoreMargins](https://github.com/lorenzodifuccia/cloudflare/raw/master/Images/safaribooks/safaribooks_calibre_IgnoreMargins.png "Select Ignore margins")  
   
