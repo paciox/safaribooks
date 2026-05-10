@@ -18,6 +18,7 @@ This workspace keeps the original EPUB downloader path as the default behavior, 
 The main additions are:
 - a separate PDF renderer path, isolated from the working EPUB packaging logic
 - `--output-pdf` and `--output-to-pdf` to download directly to PDF when needed
+- `--output-pdf 1` or `--output-to-pdf 1` to keep the packaged `.epub` alongside the PDF when you want both files
 - `convert_to_pdf.py` to convert an already-downloaded book folder or an existing EPUB file to PDF without redownloading
 - improved PDF ordering so cover, contents, appendices, and index pages are preserved when they exist in the downloaded source
 - automatic PDF fallback for known compatibility cases, such as fixed-layout books or books with many oversized figures and wide tables
@@ -34,6 +35,7 @@ When that happens, PDF is often the safest workaround because Chromium renders t
 
 You can solve it in either of these ways:
 - use `python safaribooks.py --output-pdf <BOOK_ID>` while downloading the book
+- use `python safaribooks.py --output-to-pdf 1 <BOOK_ID>` if you want the PDF and the packaged EPUB from the same download
 - use `python convert_to_pdf.py <BOOK_FOLDER_OR_EXISTING_EPUB>` later if you already downloaded the book and do not want to redownload it
 
 ### Practical repair workflow for a broken book
@@ -171,6 +173,7 @@ $ python retrieve_cookies.py
 - You do not need `Pillow`, `playwright`, or Chromium for ordinary books that stay on the EPUB path.
 - You do need them for any explicit PDF conversion and for books that are automatically routed to PDF because their layout is known to break in EPUB readers.
 - If a book is already downloaded and the problem is only the way your EPUB reader renders it, converting the existing folder or `.epub` file to PDF is usually enough. A redownload is not normally required.
+- Direct `--output-pdf` or `--output-to-pdf` mode defaults to PDF-only. If you want the downloader to also package the `.epub`, pass `1`, for example `--output-to-pdf 1`.
 - Install and run the PDF stack in the same Python environment. If you launch `venv\Scripts\python.exe safaribooks.py --output-pdf ...`, install `Pillow` and `playwright` and run `playwright install chromium` with that same `venv\Scripts\python.exe` as well.
 - You do not need to activate the virtual environment if you call its interpreter explicitly. `venv\Scripts\python.exe -m pip ...` and `venv\Scripts\python.exe convert_to_pdf.py ...` already use that `venv` directly.
 - Installing the Python package `playwright` inside a virtual environment is enough for the Python side. The Chromium browser binaries downloaded by `python -m playwright install chromium` are managed by Playwright itself, not as normal site-packages files.
@@ -192,6 +195,7 @@ It's really simple to use, just choose a book from the library and replace in th
 ```shell
 $ python3 safaribooks.py --cred "account_mail@mail.com:password01" XXXXXXXXXXXXX
 $ python3 safaribooks.py --output-pdf XXXXXXXXXXXXX
+$ python3 safaribooks.py --output-to-pdf 1 XXXXXXXXXXXXX
 $ python3 safaribooks.py 9781633436541,9781491958698
 $ python3 safaribooks.py 9781633436541, 9781491958698 --output-to-pdf
 $ python3 safaribooks.py 9781633436541 9781491958698 --output-pdf
@@ -212,7 +216,8 @@ Like: `https://www.safaribooksonline.com/library/view/test-driven-development-wi
 ```shell
 $ python3 safaribooks.py --help
 usage: safaribooks.py [--cred <EMAIL:PASS> | --login] [--no-cookies]
-                      [--kindle] [--output-pdf] [--preserve-log] [--help]
+                      [--kindle] [--output-pdf {0,1}] [--preserve-log]
+                      [--help]
                       <BOOK ID> [<BOOK ID> ...]
 
 Download and generate an EPUB of your favorite books from Safari Books Online,
@@ -235,9 +240,10 @@ optional arguments:
   --kindle             Add some CSS rules that block overflow on `table` and
                        `pre` elements. Use this option if you're going to
                        export the EPUB to E-Readers like Amazon Kindle.
-  --output-pdf, --output-to-pdf
+  --output-pdf, --output-to-pdf {0,1}
                        Render PDF output using the separate PDF renderer
-                       instead of packaging an EPUB.
+                       instead of packaging an EPUB. Use `1` to also create
+                       the EPUB; omit the value or use `0` for PDF only.
   --preserve-log       Leave the `info_XXXXXXXXXXXXX.log` file even if there
                        isn't any error.
   --help               Show this help message.
