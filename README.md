@@ -1,23 +1,3 @@
-EDITS:
-This is a fork modified for v2 api of oreilly and it's sometimes imperfect.
-safaribooks.py -> Works vor api v2 for most books
-safaribooks_method_b.py -> Alternative method to run if previous script fails
-
-Explanation:
-It just so happens that they heavily modified the api and how books are served.
-Therefore as soon as you downloaded a book I suggest you to check out if it works: Check if TOC is correct, if TOC links work, if pages are missing or not present at all and differ from the
-page number specified in the book home page.
-
-Both methods work for certain types of books. There are some books which still give me troubles and won't download correctly.
-PR are welcome about that or about global fixing so we can have a single script.
-
-I will work my way through the non working books as soon as I meet them.
-
-Paciox 08/05/26
-
-+++Fixed++++
-As of now all my test return success. Might be some edge cases that still fail but it works now
-
 # SafariBooks
 Download and generate *EPUB* of your favorite books from [*Safari Books Online*](https://www.safaribooksonline.com) library.  
 I'm not responsible for the use of this program, this is only for *personal* and *educational* purpose.  
@@ -32,6 +12,57 @@ Before any usage please read the *O'Reilly*'s [Terms of Service](https://learnin
 - **However... it still work for downloading books.**  
 (Use SSO hack: log in via browser, then copy cookies into `cookies.json`, see below and issues. Love ❤️)
 
+## Compatibility work in this workspace
+This workspace keeps the original EPUB downloader path as the default behavior, but adds a separate PDF compatibility path so broken-layout books can be handled without destabilizing the normal EPUB flow.
+
+The main additions are:
+- a separate PDF renderer path, isolated from the working EPUB packaging logic
+- `--output-pdf` and `--output-to-pdf` to download directly to PDF when needed
+- `convert_to_pdf.py` to convert an already-downloaded book folder or an existing EPUB file to PDF without redownloading
+- improved PDF ordering so cover, contents, appendices, and index pages are preserved when they exist in the downloaded source
+- automatic PDF fallback for known compatibility cases, such as fixed-layout books or books with many oversized figures and wide tables
+
+### Warning about problematic books
+Some books download correctly but still look broken in common EPUB readers. This is usually not a download failure: the XHTML, CSS, images, and chapters are present on disk, but the reader does a poor job rendering that layout.
+
+Typical symptoms include:
+- wide images or wide tables being clipped on the right side
+- fixed-layout pages relying on absolute positioning, with text overlays rendered badly or missing in some readers
+- books that technically open as EPUB, but are uncomfortable to read because figures, code blocks, or page composition are not respected
+
+When that happens, PDF is often the safest workaround because Chromium renders the original downloaded XHTML/CSS more faithfully than many EPUB readers.
+
+You can solve it in either of these ways:
+- use `python safaribooks.py --output-pdf <BOOK_ID>` while downloading the book
+- use `python convert_to_pdf.py <BOOK_FOLDER_OR_EXISTING_EPUB>` later if you already downloaded the book and do not want to redownload it
+
+### Practical repair workflow for a broken book
+If a book is already downloaded and the problem is only the final reading experience in your EPUB reader, the fastest fix is usually to convert that existing download to PDF.
+
+This is the typical workflow on Windows when using the local `venv`:
+
+```powershell
+venv\Scripts\python.exe -m pip install Pillow playwright
+venv\Scripts\python.exe -m playwright install chromium
+venv\Scripts\python.exe convert_to_pdf.py "Books\Some Book (1234567890123)"
+```
+
+If you want to convert the EPUB file directly and choose the destination PDF name yourself:
+
+```powershell
+venv\Scripts\python.exe convert_to_pdf.py "Books\Some Book (1234567890123)\1234567890123.epub" "Books\Some Book (1234567890123)\1234567890123-fixed.pdf"
+```
+
+Activation is optional. Running `venv\Scripts\python.exe ...` already uses the virtual environment directly, so installs and commands go into that `venv`, not into the global Python installation.
+
+If Playwright prints a message such as `Please run the following command to download new browsers: playwright install`, it means the Python package is installed but the browser runtime is not yet available. Run:
+
+```powershell
+venv\Scripts\python.exe -m playwright install chromium
+```
+
+This repair path is meant for books that are downloaded correctly but rendered badly by an EPUB reader. It does not restore content that was never downloaded in the first place.
+
 ---
 
 ## Overview:
@@ -43,17 +74,19 @@ Before any usage please read the *O'Reilly*'s [Terms of Service](https://learnin
   * [Example: Use or not the `--kindle` option](#use-or-not-the---kindle-option)
 
 ## Requirements & Setup:
-You need Python 3 installed first. For normal reflowable books, the script only needs the base Python dependencies from `requirements.txt`. For fixed-layout books, the script may generate a compatibility PDF instead of an EPUB, and that requires extra packages plus a Chromium browser installed by Playwright.
+You need Python 3 installed first. For normal reflowable books, the downloader only needs the base Python dependencies from `requirements.txt`. PDF generation is now handled by a separate renderer path, used either when you explicitly ask for PDF output or when the downloader detects a book layout that common EPUB readers are likely to break.
 
 The dependencies are split into two groups:
 
 - Base EPUB dependencies: always needed.
   - `requests`: downloads metadata, chapters, CSS, images, and other book assets.
   - `lxml`: parses the downloaded HTML/XML and builds the EPUB structure.
-- Optional PDF dependencies: only needed for fixed-layout books.
-  - `playwright`: renders the downloaded XHTML/CSS with Chromium, which handles complex fixed-layout pages much better than many EPUB readers.
-  - `Pillow`: combines the rendered page images into the final PDF.
+- Optional PDF dependencies: only needed when you use `--output-pdf`, `convert_to_pdf.py`, or when the downloader automatically falls back to PDF for a compatibility case.
+  - `playwright`: renders the downloaded XHTML/CSS with Chromium, which handles complex layouts, wide images, and fixed-layout pages much better than many EPUB readers.
+  - `Pillow`: combines page screenshots into the final PDF for fixed-layout books.
   - `chromium` via `playwright install chromium`: the `playwright` Python package does not ship the browser executable by itself, so this extra step downloads the actual browser runtime used for rendering.
+- Optional cookie helper dependency: only needed if you want to generate `cookies.json` automatically from an already logged-in browser session.
+  - `browser_cookie3`: reads cookies from supported local browsers so `retrieve_cookies.py` can export the O'Reilly session cookies directly into `cookies.json`.
 
 ### Option 1: plain `pip`
 ```shell
@@ -62,10 +95,16 @@ $ cd safaribooks/
 $ pip3 install -r requirements.txt
 ```
 
-If you also want fixed-layout PDF support:
+If you also want PDF support:
 ```shell
 $ pip3 install Pillow playwright
 $ python3 -m playwright install chromium
+```
+
+If you also want the browser cookie helper:
+```shell
+$ pip3 install browser_cookie3
+$ python3 retrieve_cookies.py
 ```
 
 ### Option 2: recommended `venv`
@@ -79,10 +118,23 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-If you also want fixed-layout PDF support inside that same virtual environment:
+If you also want PDF support inside that same virtual environment:
 ```powershell
 python -m pip install Pillow playwright
 python -m playwright install chromium
+```
+
+Equivalent explicit commands without activating the virtual environment first:
+
+```powershell
+venv\Scripts\python.exe -m pip install Pillow playwright
+venv\Scripts\python.exe -m playwright install chromium
+```
+
+If you also want the browser cookie helper inside that same virtual environment:
+```powershell
+python -m pip install browser_cookie3
+python retrieve_cookies.py
 ```
 
 If you prefer not to activate the virtual environment, you can still install everything into it explicitly:
@@ -90,6 +142,8 @@ If you prefer not to activate the virtual environment, you can still install eve
 venv\Scripts\python.exe -m pip install -r requirements.txt
 venv\Scripts\python.exe -m pip install Pillow playwright
 venv\Scripts\python.exe -m playwright install chromium
+venv\Scripts\python.exe -m pip install browser_cookie3
+venv\Scripts\python.exe retrieve_cookies.py
 ```
 
 ### Option 3: `pipenv`
@@ -101,17 +155,34 @@ $ pipenv shell
 $ pip install -r requirements.txt
 ```
 
-If you also want fixed-layout PDF support:
+If you also want PDF support:
 ```shell
 $ pip install Pillow playwright
 $ python -m playwright install chromium
 ```
 
+If you also want the browser cookie helper:
+```shell
+$ pip install browser_cookie3
+$ python retrieve_cookies.py
+```
+
 ### Important notes about the PDF path
 - You do not need `Pillow`, `playwright`, or Chromium for ordinary books that stay on the EPUB path.
-- You do need them for fixed-layout books, because this script currently creates a compatibility PDF for those titles instead of trying to ship a broken EPUB.
+- You do need them for any explicit PDF conversion and for books that are automatically routed to PDF because their layout is known to break in EPUB readers.
+- If a book is already downloaded and the problem is only the way your EPUB reader renders it, converting the existing folder or `.epub` file to PDF is usually enough. A redownload is not normally required.
+- Install and run the PDF stack in the same Python environment. If you launch `venv\Scripts\python.exe safaribooks.py --output-pdf ...`, install `Pillow` and `playwright` and run `playwright install chromium` with that same `venv\Scripts\python.exe` as well.
+- You do not need to activate the virtual environment if you call its interpreter explicitly. `venv\Scripts\python.exe -m pip ...` and `venv\Scripts\python.exe convert_to_pdf.py ...` already use that `venv` directly.
 - Installing the Python package `playwright` inside a virtual environment is enough for the Python side. The Chromium browser binaries downloaded by `python -m playwright install chromium` are managed by Playwright itself, not as normal site-packages files.
+- If Playwright says it was installed or updated and asks you to run `playwright install`, do that with the same interpreter you plan to use for conversion, for example `venv\Scripts\python.exe -m playwright install chromium`.
 - On Linux, Playwright may additionally ask for OS-level libraries. On Windows, the commands above are usually enough.
+- The separated PDF entry points are:
+  - `python safaribooks.py --output-pdf <BOOK_ID>` to download and render directly to PDF.
+  - `python convert_to_pdf.py <BOOK_ID_OR_BOOK_FOLDER>` to convert an already-downloaded book folder to PDF.
+  - `python convert_to_pdf.py <PATH_TO_EXISTING_EPUB>` to convert an existing EPUB file to PDF without redownloading.
+- The downloader may also auto-select PDF for known compatibility cases, such as fixed-layout books and books with many oversized figures/tables that are commonly clipped in EPUB readers.
+- When the downloaded source contains `default_cover.xhtml`, `contents.xhtml`, appendices, or index pages, the separate PDF renderer preserves that reading order in the generated PDF and rewrites TOC links to point at the merged PDF content.
+- If a downloaded book folder already contains `OEBPS`, `META-INF`, or an `.epub` file, you can reuse those local files directly. You do not need to redownload the book just to try the PDF path.
   
 ## Usage:
 It's really simple to use, just choose a book from the library and replace in the following command:
@@ -120,6 +191,17 @@ It's really simple to use, just choose a book from the library and replace in th
 
 ```shell
 $ python3 safaribooks.py --cred "account_mail@mail.com:password01" XXXXXXXXXXXXX
+$ python3 safaribooks.py --output-pdf XXXXXXXXXXXXX
+$ python3 safaribooks.py 9781633436541,9781491958698
+$ python3 safaribooks.py 9781633436541, 9781491958698 --output-to-pdf
+$ python3 safaribooks.py 9781633436541 9781491958698 --output-pdf
+$ python3 convert_to_pdf.py XXXXXXXXXXXXX
+$ python3 convert_to_pdf.py "/path/to/Books/Some Book (1234567890123)"
+$ python3 convert_to_pdf.py "/path/to/Books/Some Book (1234567890123)/1234567890123.epub"
+$ python3 convert_to_pdf.py "/path/to/book.epub" "/path/to/book.pdf"
+$ venv\Scripts\python.exe -m pip install Pillow playwright
+$ venv\Scripts\python.exe -m playwright install chromium
+$ venv\Scripts\python.exe convert_to_pdf.py "Books\Some Book (1234567890123)\1234567890123.epub" "Books\Some Book (1234567890123)\1234567890123-fixed.pdf"
 ```
 
 The ID is the digits that you find in the URL of the book description page:  
@@ -130,14 +212,15 @@ Like: `https://www.safaribooksonline.com/library/view/test-driven-development-wi
 ```shell
 $ python3 safaribooks.py --help
 usage: safaribooks.py [--cred <EMAIL:PASS> | --login] [--no-cookies]
-                      [--kindle] [--preserve-log] [--help]
-                      <BOOK ID>
+                      [--kindle] [--output-pdf] [--preserve-log] [--help]
+                      <BOOK ID> [<BOOK ID> ...]
 
-Download and generate an EPUB of your favorite books from Safari Books Online.
+Download and generate an EPUB of your favorite books from Safari Books Online,
+or render PDF output when requested.
 
 positional arguments:
-  <BOOK ID>            Book digits ID that you want to download. You can find
-                       it in the URL (X-es):
+  <BOOK ID>            One or more book digits IDs that you want to download.
+                       You can find them in the URL (X-es):
                        `https://learning.oreilly.com/library/view/book-
                        name/XXXXXXXXXXXXX/`
 
@@ -152,14 +235,27 @@ optional arguments:
   --kindle             Add some CSS rules that block overflow on `table` and
                        `pre` elements. Use this option if you're going to
                        export the EPUB to E-Readers like Amazon Kindle.
+  --output-pdf, --output-to-pdf
+                       Render PDF output using the separate PDF renderer
+                       instead of packaging an EPUB.
   --preserve-log       Leave the `info_XXXXXXXXXXXXX.log` file even if there
                        isn't any error.
   --help               Show this help message.
 ```
+
+`<BOOK ID>` accepts single IDs, multiple space-separated IDs, multiple comma-separated IDs, or a mix of both. For example, all of the following are valid:
+
+```shell
+$ python3 safaribooks.py 9781633436541,9781491958698
+$ python3 safaribooks.py 9781633436541 9781491958698
+$ python3 safaribooks.py 9781633436541, 9781491958698 --output-to-pdf
+```
+
+The downloader will process them sequentially and wait briefly between books to reduce rate limiting.
   
 The first time you use the program, you'll have to specify your Safari Books Online account credentials (look [`here`](/../../issues/15) for special character).  
 The next times you'll download a book, before session expires, you can omit the credential, because the program save your session cookies in a file called `cookies.json`.  
-For **SSO**, please use the `sso_cookies.py` program in order to create the `cookies.json` file from the SSO cookies retrieved by your browser session (please follow [`these steps`](/../../issues/150#issuecomment-555423085)).  
+For **SSO**, use the `retrieve_cookies.py` helper to create `cookies.json` from the cookies already stored in your browser session. Install `browser_cookie3` first if needed, then run `python retrieve_cookies.py` after you have logged into `learning.oreilly.com` in your browser (please follow [`these steps`](/../../issues/150#issuecomment-555423085)).  
   
 Pay attention if you use a shared PC, because everyone that has access to your files can steal your session. 
 If you don't want to cache the cookies, just use the `--no-cookies` option and provide all time your credential through the `--cred` option or the more safe `--login` one: this will prompt you for credential during the script execution.
@@ -177,7 +273,7 @@ After the execution, you can read the `9781491958698_CLEAR.epub` in every E-Read
 The program offers also an option to ensure best compatibilities for who wants to export the `EPUB` to E-Readers like Amazon Kindle: `--kindle`, it blocks overflow on `table` and `pre` elements (see [example](#use-or-not-the---kindle-option)).  
 In this case, I suggest you to convert the `EPUB` to `AZW3` with Calibre or to `MOBI`, remember in this case to select `Ignore margins` in the conversion options:  
 
-When the source book is a fixed-layout title, the downloader keeps the original XHTML/CSS untouched on disk, downloads any referenced font files, and renders a PDF with Chromium instead of packaging an EPUB. This is why the optional PDF stack needs both the Python packages and the separate `playwright install chromium` step.
+When the source book is a fixed-layout title, or when it is detected as a compatibility case with many oversized figures/tables, the downloader keeps the original XHTML/CSS untouched on disk and routes that book through the separate PDF renderer. This is why the optional PDF stack needs both the Python packages and the separate `playwright install chromium` step.
   
 ![Calibre IgnoreMargins](https://github.com/lorenzodifuccia/cloudflare/raw/master/Images/safaribooks/safaribooks_calibre_IgnoreMargins.png "Select Ignore margins")  
   
