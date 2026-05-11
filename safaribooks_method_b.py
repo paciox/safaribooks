@@ -19,6 +19,8 @@ from lxml import html, etree
 from multiprocessing import Process, Queue, Value
 from urllib.parse import urljoin, urlparse, parse_qs, quote_plus
 
+from book_pdf import analyze_book_layout, render_book_to_pdf
+
 
 PATH = os.path.dirname(os.path.realpath(__file__))
 COOKIES_FILE = os.path.join(PATH, "cookies.json")
@@ -229,6 +231,32 @@ class WinQueue(list):  # TODO: error while use `process` in Windows: can't pickl
         return self.__len__()
 
 
+def normalize_output_pdf_args(argv):
+    normalized_args = []
+    index = 0
+
+    while index < len(argv):
+        arg = argv[index]
+
+        if arg in {"--output-pdf", "--output-to-pdf"}:
+            next_arg = argv[index + 1] if index + 1 < len(argv) else None
+
+            if next_arg in {"0", "1"}:
+                normalized_args.append("{0}={1}".format(arg, next_arg))
+                index += 2
+                continue
+
+            if next_arg is None or next_arg.startswith("-") or len(next_arg) != 1 or not next_arg.isdigit():
+                normalized_args.append("{0}=0".format(arg))
+                index += 1
+                continue
+
+        normalized_args.append(arg)
+        index += 1
+
+    return normalized_args
+
+
 class SafariBooks:
     LOGIN_URL = ORLY_BASE_URL + "/member/auth/login/"
     LOGIN_ENTRY_URL = SAFARI_BASE_URL + "/login/unified/?next=/home/"
@@ -393,6 +421,8 @@ class SafariBooks:
         self.css_path = ""
         self.images_path = ""
         self.fonts_path = ""
+        self.pdf_profile = None
+        self.use_pdf_output = False
         self.create_dirs()
 
         self.chapter_title = ""
@@ -423,22 +453,30 @@ class SafariBooks:
         self.css_done_queue = Queue(0) if "win" not in sys.platform else WinQueue()
         self.display.info("Downloading book CSSs... (%s files)" % len(self.css), state=True)
         self.collect_css()
-        self.is_fixed_layout, self.fixed_layout_width, self.fixed_layout_height = self._detect_fixed_layout()
-        if self.is_fixed_layout:
-            self.display.info(
-                "Fixed-layout book detected; creating a compatibility PDF instead of an EPUB.",
-                state=True
-            )
+        self.pdf_profile = analyze_book_layout(self.BOOK_PATH, self.book_id)
+        self.use_pdf_output = args.output_pdf is not None or self.pdf_profile.should_auto_pdf
+        if self.use_pdf_output:
+            if args.output_pdf is not None:
+                self.display.info("PDF output requested; using the separate PDF renderer.", state=True)
+            else:
+                self.display.info(
+                    "Compatibility PDF selected automatically: %s." % self.pdf_profile.reason,
+                    state=True
+                )
             self.collect_fonts()
         self.images_done_queue = Queue(0) if "win" not in sys.platform else WinQueue()
         self.display.info("Downloading book images... (%s files)" % len(self.images), state=True)
         self.collect_images()
 
+        if self.use_pdf_output and args.output_pdf == 1:
+            self.display.info("Creating EPUB file to keep alongside the PDF...", state=True)
+            self.create_epub()
+
         self.display.info(
-            "Creating PDF file..." if self.is_fixed_layout else "Creating EPUB file...",
+            "Creating PDF file..." if self.use_pdf_output else "Creating EPUB file...",
             state=True
         )
-        output_file = self.create_epub()
+        output_file = self.create_pdf() if self.use_pdf_output else self.create_epub()
 
         if not args.no_cookies:
             json.dump(self.session.cookies.get_dict(), open(COOKIES_FILE, "w"))
@@ -539,9 +577,13 @@ class SafariBooks:
         return False
 
     REQUEST_TIMEOUT = 30
+    RATE_LIMIT_STATUS_CODES = {403, 429}
+    RATE_LIMIT_MAX_RETRIES = 2
+    RATE_LIMIT_BASE_DELAY = 5
 
     def requests_provider(self, url, is_post=False, data=None, perform_redirect=True, **kwargs):
         kwargs.setdefault('timeout', self.REQUEST_TIMEOUT)
+        rate_limit_retry = kwargs.pop("_rate_limit_retry", 0)
         try:
             response = getattr(self.session, "post" if is_post else "get")(
                 url,
@@ -562,6 +604,29 @@ class SafariBooks:
         except (requests.ConnectionError, requests.ConnectTimeout, requests.RequestException) as request_exception:
             self.display.error(str(request_exception))
             return 0
+
+        if response.status_code in self.RATE_LIMIT_STATUS_CODES and rate_limit_retry < self.RATE_LIMIT_MAX_RETRIES:
+            retry_after = response.headers.get("Retry-After", "").strip()
+            delay = int(retry_after) if retry_after.isdigit() else self.RATE_LIMIT_BASE_DELAY * (rate_limit_retry + 1)
+            self.display.info(
+                "HTTP %d received for %s. Waiting %ss before retry %d/%d." % (
+                    response.status_code,
+                    url,
+                    delay,
+                    rate_limit_retry + 1,
+                    self.RATE_LIMIT_MAX_RETRIES,
+                ),
+                state=True,
+            )
+            time.sleep(delay)
+            return self.requests_provider(
+                url,
+                is_post=is_post,
+                data=data,
+                perform_redirect=perform_redirect,
+                _rate_limit_retry=rate_limit_retry + 1,
+                **kwargs
+            )
 
         if response.is_redirect and perform_redirect:
             return self.requests_provider(response.next.url, is_post, None, perform_redirect)
@@ -885,6 +950,25 @@ class SafariBooks:
             headers["Authorization"] = "Bearer %s" % jwt
         return headers
 
+    @staticmethod
+    def _wrap_content_fragments(response_text):
+        wrapper = html.fromstring('<div id="sbo-rt-content"></div>')
+        fragments = html.fragments_fromstring(response_text)
+        last_node = None
+
+        for fragment in fragments:
+            if isinstance(fragment, str):
+                if last_node is None:
+                    wrapper.text = (wrapper.text or "") + fragment
+                else:
+                    last_node.tail = (last_node.tail or "") + fragment
+                continue
+
+            wrapper.append(fragment)
+            last_node = fragment
+
+        return wrapper
+
     def get_html(self, url):
         response = None
         for attempt in range(self.MAX_CONTENT_RETRIES):
@@ -908,6 +992,11 @@ class SafariBooks:
         root = None
         try:
             root = html.fromstring(response.text, base_url=API_ORIGIN_URL)
+
+            # Some titles return chapter XHTML as multiple top-level fragments instead of a full HTML document.
+            # Preserve all fragments by wrapping them before parse_html() looks for the content container.
+            if not root.xpath("//body") and not root.xpath("//div[@id='sbo-rt-content']"):
+                root = self._wrap_content_fragments(response.text)
 
         except (html.etree.ParseError, html.etree.ParserError) as parsing_error:
             self.display.error(parsing_error)
@@ -970,7 +1059,8 @@ class SafariBooks:
             if len(root.xpath("//div[@class='controls']/a/text()")):
                 self.display.exit(self.display.api_error(" "))
 
-        book_content = root.xpath("//div[@id='sbo-rt-content']")
+        book_content = [root] if getattr(root, "tag", None) == "div" and root.attrib.get("id") == "sbo-rt-content" \
+            else root.xpath("//div[@id='sbo-rt-content']")
         if not len(book_content):
             body_elements = root.xpath("//body")
             if body_elements:
@@ -1254,7 +1344,7 @@ class SafariBooks:
     FONT_URL_PATTERN = re.compile(r'url\(([^)]+)\)', re.IGNORECASE)
 
     def _collect_font_urls(self):
-        font_urls = []
+        font_assets = []
         seen = set()
         for index, css_url in enumerate(self.css):
             css_file = os.path.join(self.css_path, "Style{0:0>2}.css".format(index))
@@ -1267,25 +1357,36 @@ class SafariBooks:
                 continue
 
             for raw_font_url in self.FONT_URL_PATTERN.findall(content):
-                font_url = raw_font_url.strip().strip('"\'')
-                if not font_url or font_url.startswith('data:'):
+                font_ref = raw_font_url.strip().strip('"\'')
+                if not font_ref or font_ref.startswith('data:'):
                     continue
 
-                resolved_font_url = urljoin(css_url, font_url)
-                if resolved_font_url not in seen:
-                    font_urls.append(resolved_font_url)
-                    seen.add(resolved_font_url)
+                resolved_font_url = urljoin(css_url, font_ref)
+                relative_path = font_ref.split('#', 1)[0].split('?', 1)[0].replace('/', os.sep)
+                while relative_path.startswith('..' + os.sep):
+                    relative_path = relative_path[3:]
+                if not relative_path:
+                    relative_path = os.path.join("fonts", os.path.basename(urlparse(resolved_font_url).path))
 
-        return font_urls
+                asset_key = (resolved_font_url, relative_path)
+                if asset_key not in seen:
+                    font_assets.append(asset_key)
+                    seen.add(asset_key)
 
-    def _download_font(self, url):
-        font_name = os.path.basename(urlparse(url).path)
+        return font_assets
+
+    def _download_font(self, url, relative_path):
+        font_name = os.path.basename(relative_path) or os.path.basename(urlparse(url).path)
         if not font_name:
             return
 
-        font_path = os.path.join(self.fonts_path, font_name)
+        font_path = os.path.join(self.BOOK_PATH, "OEBPS", relative_path)
         if os.path.isfile(font_path):
             return
+
+        font_dir = os.path.dirname(font_path)
+        if font_dir and not os.path.isdir(font_dir):
+            os.makedirs(font_dir)
 
         response = self.requests_provider(url, headers=self._get_content_headers(), stream=True)
         if response == 0 or response.status_code != 200:
@@ -1297,16 +1398,16 @@ class SafariBooks:
                 font_file.write(chunk)
 
     def collect_fonts(self):
-        font_urls = self._collect_font_urls()
-        if not font_urls:
-            self.display.info("No embedded fonts referenced by this fixed-layout book.", state=True)
+        font_assets = self._collect_font_urls()
+        if not font_assets:
+            self.display.info("No embedded fonts referenced by the downloaded CSS.", state=True)
             return
 
-        self.display.info("Downloading book fonts... (%s files)" % len(font_urls), state=True)
+        self.display.info("Downloading book fonts... (%s files)" % len(font_assets), state=True)
         self.display.state_status.value = -1
-        for index, font_url in enumerate(font_urls, 1):
-            self._download_font(font_url)
-            self.display.state(len(font_urls), index)
+        for index, font_asset in enumerate(font_assets, 1):
+            self._download_font(*font_asset)
+            self.display.state(len(font_assets), index)
 
     def _detect_fixed_layout(self):
         """Scan downloaded CSS files for fixed-layout indicators (absolute-positioned pages with fixed px dimensions).
@@ -1549,17 +1650,23 @@ class SafariBooks:
             navmap
         )
 
-    def create_epub(self):
-        is_fixed, vp_w, vp_h = self._detect_fixed_layout()
-        if is_fixed:
-            self.display.info(
-                "Fixed-layout content detected; generating PDF instead of EPUB for compatibility.",
-                state=True
-            )
-            if not self._render_fixed_layout_pdf(vp_w, vp_h):
-                self.display.exit("Compatibility PDF creation failed for this fixed-layout book.")
-            return os.path.join(self.BOOK_PATH, self.book_id + ".pdf")
+    def create_pdf(self):
+        if self.pdf_profile is None:
+            self.pdf_profile = analyze_book_layout(self.BOOK_PATH, self.book_id)
 
+        pdf_path = os.path.join(self.BOOK_PATH, self.book_id + ".pdf")
+        rendered_path = render_book_to_pdf(
+            self.BOOK_PATH,
+            output_path=pdf_path,
+            profile=self.pdf_profile,
+            display=self.display,
+        )
+        if not rendered_path:
+            self.display.exit("PDF creation failed for this book.")
+
+        return rendered_path
+
+    def create_epub(self):
         open(os.path.join(self.BOOK_PATH, "mimetype"), "w").write("application/epub+zip")
         meta_info = os.path.join(self.BOOK_PATH, "META-INF")
         if os.path.isdir(meta_info):
@@ -1578,10 +1685,6 @@ class SafariBooks:
             self.create_toc().encode("utf-8", "xmlcharrefreplace")
         )
 
-        is_fixed, vp_w, vp_h = self._detect_fixed_layout()
-        if is_fixed:
-            self.display.info("Fixed-layout content detected; keeping the original XHTML for EPUB output.", state=True)
-
         zip_file = os.path.join(PATH, "Books", self.book_id)
         if os.path.isfile(zip_file + ".zip"):
             os.remove(zip_file + ".zip")
@@ -1596,7 +1699,7 @@ class SafariBooks:
 if __name__ == "__main__":
     arguments = argparse.ArgumentParser(prog="safaribooks.py",
                                         description="Download and generate an EPUB of your favorite books"
-                                                    " from Safari Books Online.",
+                                                    " from Safari Books Online, or render PDF output when requested.",
                                         add_help=False,
                                         allow_abbrev=False)
 
@@ -1621,17 +1724,23 @@ if __name__ == "__main__":
              " Use this option if you're going to export the EPUB to E-Readers like Amazon Kindle."
     )
     arguments.add_argument(
+        "--output-pdf", "--output-to-pdf", dest="output_pdf", type=int, choices=[0, 1], default=None,
+        help="Render PDF output using the separate PDF renderer instead of packaging an EPUB."
+             " Use `1` to also create the EPUB; omit the value or use `0` for PDF only."
+    )
+    arguments.add_argument(
         "--preserve-log", dest="log", action='store_true', help="Leave the `info_XXXXXXXXXXXXX.log`"
                                                                 " file even if there isn't any error."
     )
     arguments.add_argument("--help", action="help", default=argparse.SUPPRESS, help='Show this help message.')
     arguments.add_argument(
-        "bookid", metavar='<BOOK ID>',
-        help="Book digits ID that you want to download. You can find it in the URL (X-es):"
-             " `" + SAFARI_BASE_URL + "/library/view/book-name/XXXXXXXXXXXXX/`"
+           "bookid", metavar='<BOOK ID>', nargs='+',
+           help="One or more book digits IDs that you want to download."
+               " You can find them in the URL (X-es):"
+               " `" + SAFARI_BASE_URL + "/library/view/book-name/XXXXXXXXXXXXX/`"
     )
 
-    args_parsed = arguments.parse_args()
+    args_parsed = arguments.parse_args(normalize_output_pdf_args(sys.argv[1:]))
     if args_parsed.cred or args_parsed.login:
         print("WARNING: Due to recent changes on ORLY website, \n" \
                 "the `--cred` and `--login` options are temporarily disabled.\n"
@@ -1663,6 +1772,32 @@ if __name__ == "__main__":
         if args_parsed.no_cookies:
             arguments.error("invalid option: `--no-cookies` is valid only if you use the `--cred` option")
 
-    SafariBooks(args_parsed)
+    raw_book_ids = []
+    for raw_book_id in args_parsed.bookid:
+        raw_book_ids.extend(raw_book_id.split(","))
+
+    book_ids = [book_id.strip() for book_id in raw_book_ids if book_id.strip()]
+    failed_ids = []
+    batch_pause_seconds = 5
+
+    for index, book_id in enumerate(book_ids, 1):
+        current_args = argparse.Namespace(**vars(args_parsed))
+        current_args.bookid = book_id
+
+        try:
+            SafariBooks(current_args)
+        except SystemExit as exit_error:
+            exit_code = exit_error.code if isinstance(exit_error.code, int) else 1
+            if exit_code:
+                failed_ids.append(book_id)
+
+        if index < len(book_ids):
+            print("Waiting %ss before the next book to reduce rate limiting..." % batch_pause_seconds)
+            time.sleep(batch_pause_seconds)
+
+    if failed_ids:
+        print("Failed book IDs: %s" % ", ".join(failed_ids), file=sys.stderr)
+        sys.exit(1)
+
     # Hint: do you want to download more then one book once, initialized more than one instance of `SafariBooks`...
     sys.exit(0)
